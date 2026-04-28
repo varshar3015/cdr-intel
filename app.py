@@ -1,7 +1,7 @@
 """
 CDR Intelligence Platform v2.0
 Professional Call Detail Record Analysis System
-All-in-One File
+Streamlit Cloud Optimized Version
 """
 
 import streamlit as st
@@ -16,7 +16,11 @@ import requests
 import folium
 from streamlit_folium import st_folium
 
-# Optional imports with error handling
+# Optional imports with graceful fallback
+REPORTLAB_AVAILABLE = False
+PDFPLUMBER_AVAILABLE = False
+PYPDF2_AVAILABLE = False
+
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -26,20 +30,19 @@ try:
     from reportlab.lib.enums import TA_CENTER
     REPORTLAB_AVAILABLE = True
 except ImportError:
-    REPORTLAB_AVAILABLE = False
-    st.warning("⚠️ PDF report generation not available. Install reportlab for full functionality.")
+    pass
 
 try:
     import pdfplumber
     PDFPLUMBER_AVAILABLE = True
 except ImportError:
-    PDFPLUMBER_AVAILABLE = False
+    pass
 
 try:
     import PyPDF2
     PYPDF2_AVAILABLE = True
 except ImportError:
-    PYPDF2_AVAILABLE = False
+    pass
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -493,221 +496,12 @@ def load_file(uploaded_file):
                 except:
                     continue
         elif name.endswith(".pdf"):
-            if not PDFPLUMBER_AVAILABLE and not PYPDF2_AVAILABLE:
-                st.error("❌ PDF processing libraries not available. Please upload CSV or Excel files instead.")
-                return None
-                
-            st.info("🔄 Extracting data from PDF... This may take a moment.")
-            
-            # Method 1: Advanced pdfplumber with better table detection
-            if PDFPLUMBER_AVAILABLE:
-                try:
-                    import pdfplumber
-                uploaded_file.seek(0)
-                all_tables = []
-                all_text_data = []
-                
-                with pdfplumber.open(uploaded_file) as pdf:
-                    st.info(f"📄 Processing {len(pdf.pages)} pages...")
-                    
-                    for i, page in enumerate(pdf.pages):
-                        # Extract tables with better settings
-                        table_settings = {
-                            "vertical_strategy": "lines_strict",
-                            "horizontal_strategy": "lines_strict",
-                            "snap_tolerance": 3,
-                            "join_tolerance": 3,
-                            "edge_min_length": 3,
-                            "min_words_vertical": 3,
-                            "min_words_horizontal": 1,
-                            "intersection_tolerance": 3,
-                        }
-                        
-                        tables = page.extract_tables(table_settings)
-                        if tables:
-                            st.info(f"✓ Page {i+1}: Found {len(tables)} structured table(s)")
-                            all_tables.extend(tables)
-                        
-                        # Also extract text for pattern matching
-                        page_text = page.extract_text()
-                        if page_text:
-                            all_text_data.append(page_text)
-                
-                # Process structured tables first (most accurate)
-                if all_tables:
-                    for table_idx, table in enumerate(all_tables):
-                        if table and len(table) > 1:
-                            try:
-                                # Better header cleaning
-                                headers = []
-                                for i, h in enumerate(table[0]):
-                                    if h and str(h).strip():
-                                        clean_header = str(h).strip().replace('\n', ' ').replace('\r', '')
-                                        headers.append(clean_header)
-                                    else:
-                                        headers.append(f"Column_{i+1}")
-                                
-                                # Create DataFrame with better data cleaning
-                                rows = []
-                                for row in table[1:]:
-                                    clean_row = []
-                                    for cell in row:
-                                        if cell is not None:
-                                            clean_cell = str(cell).strip().replace('\n', ' ').replace('\r', '')
-                                            clean_row.append(clean_cell if clean_cell else None)
-                                        else:
-                                            clean_row.append(None)
-                                    rows.append(clean_row)
-                                
-                                df = pd.DataFrame(rows, columns=headers)
-                                
-                                # Remove completely empty rows and columns
-                                df = df.dropna(how='all').dropna(axis=1, how='all')
-                                
-                                # Validate if this looks like call data
-                                if len(df) > 0 and len(df.columns) >= 3:
-                                    # Check for call-related keywords in headers
-                                    header_text = ' '.join(headers).lower()
-                                    call_keywords = ['phone', 'number', 'call', 'time', 'date', 'duration', 'contact']
-                                    
-                                    if any(keyword in header_text for keyword in call_keywords):
-                                        st.success(f"✅ Extracted {len(df)} rows from structured table {table_idx + 1}")
-                                        return df
-                                    
-                                    # Check data content for phone numbers
-                                    sample_text = df.to_string().lower()
-                                    if re.search(r'\d{10,15}', sample_text):
-                                        st.success(f"✅ Extracted {len(df)} rows from table {table_idx + 1} (detected phone data)")
-                                        return df
-                                        
-                            except Exception as e:
-                                st.warning(f"Table {table_idx + 1} parsing issue: {str(e)}")
-                                continue
-                
-                # Method 2: Enhanced text extraction and pattern matching
-                if all_text_data:
-                    full_text = '\n'.join(all_text_data)
-                    st.info(f"📝 Analyzing {len(full_text)} characters of extracted text")
-                    
-                    # Try structured text parsing first
-                    lines = full_text.split('\n')
-                    records = []
-                    
-                    # Enhanced regex patterns for better accuracy
-                    patterns = {
-                        'phone': r'(?:\+?1[-.\s]?)?(?:\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}|\d{10,15})',
-                        'date': r'(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\w{3}\s+\d{1,2},?\s+\d{4})',
-                        'time': r'(?:\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AaPp][Mm])?)',
-                        'duration': r'(?:\d{1,3}:\d{2}(?::\d{2})?|\d+\s?(?:sec|min|hr|hour|minute|second)s?|\d+)',
-                        'amount': r'(?:\$?\d+\.?\d*)'
-                    }
-                    
-                    # Look for header-like lines
-                    potential_headers = []
-                    for line in lines[:20]:  # Check first 20 lines for headers
-                        line = line.strip()
-                        if line and any(keyword in line.lower() for keyword in ['date', 'time', 'number', 'duration', 'call', 'phone']):
-                            potential_headers.append(line)
-                    
-                    # Process each line for call records
-                    for line_num, line in enumerate(lines):
-                        line = line.strip()
-                        if len(line) < 15:  # Skip very short lines
-                            continue
-                        
-                        # Extract all pattern matches
-                        phones = re.findall(patterns['phone'], line)
-                        dates = re.findall(patterns['date'], line)
-                        times = re.findall(patterns['time'], line)
-                        durations = re.findall(patterns['duration'], line)
-                        amounts = re.findall(patterns['amount'], line)
-                        
-                        # Determine call type with better accuracy
-                        call_type = "Unknown"
-                        line_lower = line.lower()
-                        if any(word in line_lower for word in ['incoming', 'inbound', 'received', 'answered']):
-                            call_type = "Incoming"
-                        elif any(word in line_lower for word in ['outgoing', 'outbound', 'dialed', 'made']):
-                            call_type = "Outgoing"
-                        elif any(word in line_lower for word in ['missed', 'unanswered', 'declined']):
-                            call_type = "Missed"
-                        elif any(word in line_lower for word in ['sms', 'text', 'message']):
-                            call_type = "SMS"
-                        
-                        # Only create record if we have essential data
-                        if phones and (dates or times):
-                            # Clean and validate phone number
-                            phone = phones[0]
-                            # Remove common formatting
-                            clean_phone = re.sub(r'[^\d+]', '', phone)
-                            
-                            # Skip if phone number seems invalid
-                            if len(clean_phone) < 10:
-                                continue
-                            
-                            record = {
-                                'Phone_Number': phone,
-                                'Date': dates[0] if dates else '',
-                                'Time': times[0] if times else '',
-                                'Duration': durations[0] if durations else '0',
-                                'Call_Type': call_type,
-                                'Amount': amounts[0] if amounts else '',
-                                'Line_Number': line_num + 1,
-                                'Raw_Text': line
-                            }
-                            records.append(record)
-                    
-                    # Create DataFrame if we found enough records
-                    if len(records) >= 3:  # Require at least 3 records for reliability
-                        df = pd.DataFrame(records)
-                        
-                        # Data quality validation
-                        valid_phones = df['Phone_Number'].apply(lambda x: len(re.sub(r'[^\d]', '', str(x))) >= 10).sum()
-                        phone_accuracy = valid_phones / len(df) * 100
-                        
-                        st.success(f"✅ Extracted {len(df)} call records using advanced pattern matching")
-                        st.info(f"📊 Data Quality: {phone_accuracy:.1f}% valid phone numbers detected")
-                        
-                        # Show sample of extracted data for verification
-                        with st.expander("📋 Sample Extracted Data (for verification)", expanded=False):
-                            st.dataframe(df.head(10))
-                        
-                        return df
-                    else:
-                        st.warning(f"⚠️ Only found {len(records)} potential call records - may not be sufficient for analysis")
-                
-                # Method 3: Try alternative PDF libraries
-                try:
-                    import tabula
-                    uploaded_file.seek(0)
-                    
-                    # Use tabula-py for table extraction
-                    dfs = tabula.read_pdf(uploaded_file, pages='all', multiple_tables=True)
-                    
-                    for i, df in enumerate(dfs):
-                        if len(df) > 5 and len(df.columns) >= 3:
-                            # Check if this looks like call data
-                            sample_text = df.to_string().lower()
-                            if any(keyword in sample_text for keyword in ['phone', 'call', 'number', 'time', 'date']):
-                                st.success(f"✅ Extracted {len(df)} rows using tabula (table {i+1})")
-                                return df
-                                
-                except ImportError:
-                    st.info("💡 For better PDF table extraction, install tabula-py: pip install tabula-py")
-                except Exception as e:
-                    st.warning(f"Tabula extraction failed: {str(e)}")
-                
-                st.error("❌ Could not extract structured call data from PDF")
-                st.info("💡 **Tips for better PDF extraction:**")
-                st.info("• Ensure PDF contains structured tables, not scanned images")
-                st.info("• Try converting PDF to Excel/CSV format first")
-                st.info("• Check if PDF is password protected")
-                
-            except ImportError:
-                st.error("❌ Required PDF libraries not installed")
-                st.info("Install required packages: pip install pdfplumber PyPDF2")
-            except Exception as e:
-                st.error(f"PDF processing error: {str(e)}")
+            st.warning("📄 PDF processing not available in this deployment. Please convert your PDF to CSV or Excel format.")
+            st.info("💡 **How to convert PDF to CSV:**")
+            st.info("• Use online converters like SmallPDF or ILovePDF")
+            st.info("• Export from your carrier's online portal as CSV/Excel")
+            st.info("• Use Adobe Acrobat's export feature")
+            return None
         
         return None
     except Exception as e:
@@ -1266,7 +1060,7 @@ def render_bill_analysis():
             except Exception as e:
                 st.error(f"PDF generation error: {str(e)}")
         else:
-            st.info("📄 PDF reports require reportlab library")
+            st.info("📄 PDF reports not available in this deployment")
     with col2:
         try:
             output = io.BytesIO()
