@@ -496,12 +496,148 @@ def load_file(uploaded_file):
                 except:
                     continue
         elif name.endswith(".pdf"):
-            st.warning("📄 PDF processing temporarily unavailable due to deployment constraints.")
-            st.info("💡 **Please use these alternatives:**")
-            st.info("• Convert PDF to CSV using online tools (SmallPDF, ILovePDF)")
-            st.info("• Export data from your carrier's portal as CSV/Excel")
-            st.info("• Use Adobe Acrobat's export to spreadsheet feature")
-            st.info("• Copy-paste data into Excel and save as CSV")
+            if not PDFPLUMBER_AVAILABLE and not PYPDF2_AVAILABLE:
+                st.error("❌ PDF processing libraries not available. Please upload CSV or Excel files instead.")
+                st.info("💡 **How to convert PDF to CSV:**")
+                st.info("• Use online converters: SmallPDF, ILovePDF, PDF24")
+                st.info("• Export from your carrier's portal as CSV/Excel")
+                st.info("• Use Adobe Acrobat's export to spreadsheet feature")
+                return None
+                
+            st.info("🔄 Processing PDF bill... This may take a moment.")
+            
+            # Try pdfplumber first (better for tables)
+            if PDFPLUMBER_AVAILABLE:
+                try:
+                    uploaded_file.seek(0)
+                    
+                    with pdfplumber.open(uploaded_file) as pdf:
+                        st.info(f"📄 Processing {len(pdf.pages)} pages...")
+                        
+                        all_tables = []
+                        for i, page in enumerate(pdf.pages):
+                            # Extract tables with basic settings
+                            tables = page.extract_tables()
+                            if tables:
+                                st.info(f"✓ Page {i+1}: Found {len(tables)} table(s)")
+                                all_tables.extend(tables)
+                        
+                        # Process tables
+                        for table_idx, table in enumerate(all_tables):
+                            if table and len(table) > 1:
+                                try:
+                                    # Create DataFrame
+                                    df = pd.DataFrame(table[1:], columns=table[0])
+                                    df = df.dropna(how='all').dropna(axis=1, how='all')
+                                    
+                                    # Check if this looks like call data
+                                    if len(df) > 0 and len(df.columns) >= 3:
+                                        header_text = ' '.join(str(col).lower() for col in df.columns)
+                                        call_keywords = ['phone', 'number', 'call', 'time', 'date', 'duration']
+                                        
+                                        if any(keyword in header_text for keyword in call_keywords):
+                                            st.success(f"✅ Extracted {len(df)} rows from table {table_idx + 1}")
+                                            return df
+                                        
+                                        # Check data content for phone numbers
+                                        sample_text = df.to_string().lower()
+                                        if re.search(r'\d{10,15}', sample_text):
+                                            st.success(f"✅ Extracted {len(df)} rows (detected phone data)")
+                                            return df
+                                            
+                                except Exception as e:
+                                    st.warning(f"Table {table_idx + 1} processing issue: {str(e)}")
+                                    continue
+                        
+                        # If no tables found, try text extraction
+                        st.info("📝 No structured tables found, trying text extraction...")
+                        full_text = ""
+                        for page in pdf.pages:
+                            text = page.extract_text()
+                            if text:
+                                full_text += text + "\n"
+                        
+                        if full_text.strip():
+                            # Simple pattern matching for call records
+                            lines = full_text.split('\n')
+                            records = []
+                            
+                            for line in lines:
+                                line = line.strip()
+                                if len(line) < 15:
+                                    continue
+                                
+                                # Look for phone numbers and dates
+                                phones = re.findall(r'\d{10,15}', line)
+                                dates = re.findall(r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}', line)
+                                times = re.findall(r'\d{1,2}:\d{2}', line)
+                                
+                                if phones and (dates or times):
+                                    record = {
+                                        'Phone_Number': phones[0],
+                                        'Date': dates[0] if dates else '',
+                                        'Time': times[0] if times else '',
+                                        'Raw_Text': line
+                                    }
+                                    records.append(record)
+                            
+                            if len(records) >= 3:
+                                df = pd.DataFrame(records)
+                                st.success(f"✅ Extracted {len(df)} call records from text")
+                                return df
+                        
+                except Exception as e:
+                    st.warning(f"pdfplumber error: {str(e)}")
+            
+            # Fallback to PyPDF2
+            if PYPDF2_AVAILABLE:
+                try:
+                    uploaded_file.seek(0)
+                    reader = PyPDF2.PdfReader(uploaded_file)
+                    
+                    text = ""
+                    for page in reader.pages:
+                        text += page.extract_text() + "\n"
+                    
+                    if text.strip():
+                        st.info("📝 Extracted text using PyPDF2, parsing for call data...")
+                        
+                        # Simple parsing
+                        lines = text.split('\n')
+                        records = []
+                        
+                        for line in lines:
+                            line = line.strip()
+                            if len(line) < 15:
+                                continue
+                            
+                            phones = re.findall(r'\d{10,15}', line)
+                            dates = re.findall(r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}', line)
+                            
+                            if phones and dates:
+                                record = {
+                                    'Phone_Number': phones[0],
+                                    'Date': dates[0],
+                                    'Raw_Text': line
+                                }
+                                records.append(record)
+                        
+                        if len(records) >= 3:
+                            df = pd.DataFrame(records)
+                            st.success(f"✅ Extracted {len(df)} call records")
+                            return df
+                        else:
+                            st.warning("⚠️ Could not find enough call records in PDF")
+                            st.text_area("PDF Content (first 1000 chars)", text[:1000])
+                    
+                except Exception as e:
+                    st.error(f"PyPDF2 error: {str(e)}")
+            
+            st.error("❌ Could not extract call data from PDF")
+            st.info("💡 **Try these solutions:**")
+            st.info("• Ensure PDF is not password protected")
+            st.info("• Convert PDF to Excel/CSV using online tools")
+            st.info("• Check if PDF contains text (not scanned image)")
             return None
         
         return None
@@ -1052,7 +1188,34 @@ def render_bill_analysis():
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        st.info("📄 PDF reports temporarily unavailable due to deployment constraints")
+        # Generate simple text report instead of PDF
+        try:
+            report_text = f"""CDR ANALYSIS REPORT
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+EXECUTIVE SUMMARY
+================
+Total Records: {total_records:,}
+Total Duration: {seconds_to_hms(total_sec)}
+Average Duration: {seconds_to_hms(avg_sec)}
+Unique Contacts: {unique_nums}
+
+DATA QUALITY
+============
+Valid Numbers: {(df[num_col].notna().sum() if num_col and num_col in df.columns else 0):,}
+Valid Durations: {(df["_dur_sec"] > 0).sum() if "_dur_sec" in df.columns else 0:,}
+
+Generated by CDR Intelligence Platform v2.0
+"""
+            st.download_button(
+                "📄 Download Report (TXT)", 
+                data=report_text, 
+                file_name=f"cdr_report_{datetime.now().strftime('%Y%m%d')}.txt", 
+                mime="text/plain",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"Report generation error: {str(e)}")
     with col2:
         try:
             output = io.BytesIO()
