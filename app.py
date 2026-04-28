@@ -1261,10 +1261,10 @@ def render_tower_locator():
     
     st.markdown('<div class="alert alert-info">Locate cell tower positions using Mobile Country Code, Network Code, Location Area, and Cell ID parameters</div>', unsafe_allow_html=True)
     
-    # Add demo mode toggle
+    # Add demo mode toggle - DEFAULT TO TRUE for deployment
     col_demo, col_api = st.columns([1, 3])
     with col_demo:
-        demo_mode = st.checkbox("Demo Mode (No API Key Required)", value=False, help="Use sample Bangalore tower data for testing")
+        demo_mode = st.checkbox("Demo Mode (No API Key Required)", value=True, help="Use sample Bangalore tower data for testing")
     
     if not demo_mode:
         st.markdown('<div class="content-section">', unsafe_allow_html=True)
