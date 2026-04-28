@@ -15,12 +15,31 @@ import re
 import requests
 import folium
 from streamlit_folium import st_folium
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.enums import TA_CENTER
+
+# Optional imports with error handling
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.enums import TA_CENTER
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
+    st.warning("⚠️ PDF report generation not available. Install reportlab for full functionality.")
+
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+
+try:
+    import PyPDF2
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -474,11 +493,16 @@ def load_file(uploaded_file):
                 except:
                     continue
         elif name.endswith(".pdf"):
+            if not PDFPLUMBER_AVAILABLE and not PYPDF2_AVAILABLE:
+                st.error("❌ PDF processing libraries not available. Please upload CSV or Excel files instead.")
+                return None
+                
             st.info("🔄 Extracting data from PDF... This may take a moment.")
             
             # Method 1: Advanced pdfplumber with better table detection
-            try:
-                import pdfplumber
+            if PDFPLUMBER_AVAILABLE:
+                try:
+                    import pdfplumber
                 uploaded_file.seek(0)
                 all_tables = []
                 all_text_data = []
@@ -704,6 +728,10 @@ def clean_layout(fig, title=""):
     return fig
 
 def generate_pdf_report(results, filename):
+    if not REPORTLAB_AVAILABLE:
+        st.error("❌ PDF report generation not available. ReportLab library not installed.")
+        return None
+        
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=0.75*inch, leftMargin=0.75*inch, topMargin=1*inch, bottomMargin=0.75*inch)
     elements = []
@@ -1229,12 +1257,16 @@ def render_bill_analysis():
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        try:
-            results = {"total_records": total_records, "total_duration": total_sec, "avg_duration": avg_sec, "unique_numbers": unique_nums}
-            pdf = generate_pdf_report(results, uploaded_file.name)
-            st.download_button("📥 PDF Report", data=pdf, file_name=f"report_{datetime.now().strftime('%Y%m%d')}.pdf", mime="application/pdf", use_container_width=True)
-        except Exception as e:
-            st.error(f"PDF generation error: {str(e)}")
+        if REPORTLAB_AVAILABLE:
+            try:
+                results = {"total_records": total_records, "total_duration": total_sec, "avg_duration": avg_sec, "unique_numbers": unique_nums}
+                pdf = generate_pdf_report(results, uploaded_file.name)
+                if pdf:
+                    st.download_button("📥 PDF Report", data=pdf, file_name=f"report_{datetime.now().strftime('%Y%m%d')}.pdf", mime="application/pdf", use_container_width=True)
+            except Exception as e:
+                st.error(f"PDF generation error: {str(e)}")
+        else:
+            st.info("📄 PDF reports require reportlab library")
     with col2:
         try:
             output = io.BytesIO()
